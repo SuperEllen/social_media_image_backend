@@ -11,7 +11,7 @@ from PIL import Image
 from io import BytesIO
 from typing import Dict, Any
 from colorsys import rgb_to_hsv
-from transformers import CLIPImageProcessor, CLIPModel
+from transformers import CLIPImageProcessor, CLIPModel, CLIPProcessor
 from scipy.stats import entropy
 import torch
 
@@ -57,9 +57,8 @@ def calculate_image_metrics(image_bytes: bytes):
 
 def preprocess_image(image_bytes, processor):
     """对图片进行预处理"""
-    image = Image.open(BytesIO(image_bytes)).convert('RGB')
-    print('testing')
-    return processor(images=image, return_tensors="pt", padding=True)
+    image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    return processor(images=image, return_tensors="pt")
 
 def get_attention_entropy_all_layer(outputs):
     # 拿到总的层数
@@ -79,13 +78,18 @@ def get_attention_entropy_all_layer(outputs):
 
 def get_image_AE(image_bytes: bytes):
     model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14", output_attentions = True, attn_implementation="eager")
-    # processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
-    processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    # processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14")
     inputs = preprocess_image(image_bytes, processor)
-
-    # outputs = model.vision_model(pixel_values=inputs["pixel_values"],output_attentions=True,return_dict=True,output_hidden_states=True)
+    print("testing")
+    # Some transformer versions don't accept `return_dict` as a forward kwarg
+    # on submodules. Ensure the model/vision_model are configured to return
+    # dict-like outputs, then call without the unsupported kwarg.
+    model.config.return_dict = True
+    model.vision_model.config.return_dict = True
     with torch.no_grad():
-        outputs = model.vision_model(pixel_values=inputs["pixel_values"],output_attentions=True,return_dict=True,output_hidden_states=True)
+        outputs = model.vision_model(pixel_values=inputs["pixel_values"], output_attentions=True, output_hidden_states=True)
+    # If you want gradients, remove the `torch.no_grad()` context.
     attention_entropies = get_attention_entropy_all_layer(outputs)
     low_level_attention_entropy = np.mean(attention_entropies[1:6])
     mid_level_attention_entropy = np.mean(attention_entropies[7:9])
@@ -96,14 +100,14 @@ def get_image_AE(image_bytes: bytes):
 def extract_image_features(image_bytes: bytes) -> Dict[str, Any]:
     warm_hue_proportion, avg_saturation, avg_brightness, contrast_of_brightness, bright_pixel_proportion = calculate_image_metrics(image_bytes)
     low_level_attention_entropy, mid_level_attention_entropy, high_level_attention_entropy = get_image_AE(image_bytes)
-    
+    # Ensure all returned numbers are native Python types (serializable by Pydantic/JSON)
     return {
-        "Warm_Hue_Proportion": warm_hue_proportion,
-        "Average_Saturation": avg_saturation,
-        "Average_Brightness": avg_brightness,
-        "Contrast_of_Brightness": contrast_of_brightness,
-        "Proportion_Brightness": bright_pixel_proportion,
-        "Low_Level_Attention_Entropy": low_level_attention_entropy,
-        "Mid_Level_Attention_Entropy": mid_level_attention_entropy,
-        "High_Level_Attention_Entropy": high_level_attention_entropy
+        "Warm_Hue_Proportion": float(warm_hue_proportion),
+        "Average_Saturation": float(avg_saturation),
+        "Average_Brightness": float(avg_brightness),
+        "Contrast_of_Brightness": float(contrast_of_brightness),
+        "Proportion_Brightness": float(bright_pixel_proportion),
+        "Low_Level_Attention_Entropy": float(low_level_attention_entropy),
+        "Mid_Level_Attention_Entropy": float(mid_level_attention_entropy),
+        "High_Level_Attention_Entropy": float(high_level_attention_entropy)
     }
